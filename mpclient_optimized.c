@@ -97,7 +97,6 @@ static DWORD EngineScanCallback(PSCANSTRUCT Scan)
 
 static DWORD ReadStream(PVOID this, ULONGLONG Offset, PVOID Buffer, DWORD Size, PDWORD SizeRead)
 {
-    //LogMessage("read from offset %llu, leftOffset is %llu",Offset, leftOffset);
     fseek(this, leftOffset + Offset, SEEK_SET);
     DWORD sizeToRead = (Size < remainingSize)? Size : remainingSize;
     *SizeRead = fread(Buffer, 1, sizeToRead, this);
@@ -113,7 +112,6 @@ static DWORD GetStreamSize(PVOID this, PULONGLONG FileSize)
 }
 
 static DWORD GetCustomStreamSize(PVOID this, PULONGLONG FileSize){
-    //LogMessage("size required");
     *FileSize = subFileSize;
     return TRUE;
 }
@@ -259,10 +257,9 @@ int main(int argc, char **argv, char **envp)
 
     // Enable Instrumentation.
     InstrumentationCallback(image.image, image.size);
-
+    char* signature = NULL;
     for (char *filename = *++argv; *argv; ++argv) {
         ScanDescriptor.UserPtr = fopen(*argv, "r");
-        
 
         if (ScanDescriptor.UserPtr == NULL) {
             LogMessage("failed to open file %s", *argv);
@@ -272,7 +269,6 @@ int main(int argc, char **argv, char **envp)
         LogMessage("Scanning %s...", *argv);
         GetStreamSize(ScanDescriptor.UserPtr, &subFileSize);
         LogMessage("size : %llu bytes",subFileSize);
-        char* fileCached = malloc(subFileSize);
         // first run for the whole file and see if all is good
         isResponsePositive = FALSE;
         remainingSize = subFileSize;
@@ -289,12 +285,10 @@ int main(int argc, char **argv, char **envp)
         DWORD fileSize = subFileSize;
         ULONGLONG rightOffset = subFileSize - 1ULL;
         while (isResponsePositive){
-            isResponsePositive = FALSE;
             // binary search the right part
             // we need the minimum right part such that the response is positive
             ULONGLONG lowerRightOffset = leftOffset;
             ULONGLONG upperRightOffset = rightOffset;
-            LogMessage("Binary search right part");
             fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
             while (lowerRightOffset < upperRightOffset){
                 ULONGLONG middleRightOffset = lowerRightOffset + ((upperRightOffset - lowerRightOffset) >> 1ULL);
@@ -318,7 +312,6 @@ int main(int argc, char **argv, char **envp)
             //we need the maximum left part such that the response is positive
             ULONGLONG lowerLeftOffset = leftOffset;
             ULONGLONG upperLeftOffset = rightOffset;
-            LogMessage("Binary search left part");
             while (lowerLeftOffset < upperLeftOffset){
                 ULONGLONG middleLeftOffset = lowerLeftOffset + ((upperLeftOffset - lowerLeftOffset + 1) >> 1ULL);
                 subFileSize = rightOffset - middleLeftOffset + 1;
@@ -337,13 +330,20 @@ int main(int argc, char **argv, char **envp)
                 }
             }
             leftOffset = upperLeftOffset;
-            LogMessage("Signature found. Signature starts at offset %llu and ends at offset %llu\nThe signature is :\n", leftOffset, rightOffset);
+            LogMessage("Signature found. Signature starts at offset %llu and ends at offset %llu", leftOffset, rightOffset);
             subFileSize = rightOffset - leftOffset + 1;
-            char* signature = malloc(subFileSize + 1);
-            fseek(ScanDescriptor.UserPtr, rightOffset, SEEK_SET);
-            fread(signature, 1, subFileSize, ScanDescriptor.UserPtr);
-            printf("%s\n", signature);
-            free(signature);
+            LogMessage("Size of signature is : %llu bytes", subFileSize);
+            if (signature == NULL || strlen(signature) <= subFileSize) {
+                free(signature);
+                signature = malloc((size_t) (1.5 * subFileSize)); //exponential growth to reduce heap allocation
+            }
+            fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
+            if (fread(signature, 1, subFileSize, ScanDescriptor.UserPtr));
+            signature[subFileSize] = '\0';
+            LogMessage("The signature is :\n");
+            LogMessage("--------------------------------------------------------------------------");
+            printf("%s\n\n", signature);
+            LogMessage("--------------------------------------------------------------------------");
             //reset data for next iteration
             leftOffset = rightOffset + 1;
             rightOffset = fileSize - 1;
@@ -360,6 +360,7 @@ int main(int argc, char **argv, char **envp)
                 return 1;
             }
         }
+        if (signature) free(signature);
         fclose(ScanDescriptor.UserPtr);
     }
 
