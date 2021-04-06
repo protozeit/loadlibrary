@@ -51,6 +51,11 @@
 #include "streambuffer.h"
 #include "openscan.h"
 
+DWORD isResponsePositive;
+ULONGLONG leftOffset;
+ULONGLONG subFileSize;
+DWORD remainingSize;
+
 // Any usage limits to prevent bugs disrupting system.
 const struct rlimit kUsageLimits[] = {
     [RLIMIT_FSIZE]  = { .rlim_cur = 0x20000000, .rlim_max = 0x20000000 },
@@ -60,25 +65,17 @@ const struct rlimit kUsageLimits[] = {
 };
 
 DWORD (* __rsignal)(PHANDLE KernelHandle, DWORD Code, PVOID Params, DWORD Size);
-DWORD isResponsePositive;
-static DWORD EngineScanCustomCallback(PSCANSTRUCT Scan){
-    if (
-        ((Scan->Flags & 0x40010000) == 0x40010000) 
-        || (Scan->Flags & 0x08000022)
-    ){
-        isResponsePositive = TRUE;
+
+void print_sbstr(char* str, ULONGLONG start, ULONGLONG end){
+    for (ULONGLONG i = start; i <= end; i++){ 
+        printf("%02X ",str[i]);
     }
-    else {
-        isResponsePositive = FALSE;
-    }
+    putchar('\n');
 }
 static DWORD EngineScanCallback(PSCANSTRUCT Scan)
 {
     if (Scan->Flags & SCAN_MEMBERNAME) {
         LogMessage("Scanning archive member %s", Scan->VirusName);
-    }
-    if (Scan->Flags & SCAN_FILENAME) {
-        LogMessage("Scanning %s", Scan->FileName);
     }
     if (Scan->Flags & SCAN_PACKERSTART) {
         LogMessage("Packer %s identified.", Scan->VirusName);
@@ -90,9 +87,11 @@ static DWORD EngineScanCallback(PSCANSTRUCT Scan)
         LogMessage("File may be corrupt.");
     }
     if (Scan->Flags & SCAN_FILETYPE) {
+        isResponsePositive = TRUE;
         LogMessage("File %s is identified as %s", Scan->FileName, Scan->VirusName);
     }
     if (Scan->Flags & 0x08000022) {
+        isResponsePositive = TRUE;
         LogMessage("Threat %s identified.", Scan->VirusName);
     }
     // This may indicate PUA.
@@ -104,8 +103,11 @@ static DWORD EngineScanCallback(PSCANSTRUCT Scan)
 
 static DWORD ReadStream(PVOID this, ULONGLONG Offset, PVOID Buffer, DWORD Size, PDWORD SizeRead)
 {
-    fseek(this, Offset, SEEK_SET);
-    *SizeRead = fread(Buffer, 1, Size, this);
+    //LogMessage("read from offset %llu, leftOffset is %llu",Offset, leftOffset);
+    fseek(this, leftOffset + Offset, SEEK_SET);
+    DWORD sizeToRead = (Size < remainingSize)? Size : remainingSize;
+    *SizeRead = fread(Buffer, 1, sizeToRead, this);
+    remainingSize -= sizeToRead;
     return TRUE;
 }
 
@@ -116,8 +118,8 @@ static DWORD GetStreamSize(PVOID this, PULONGLONG FileSize)
     return TRUE;
 }
 
-ULONGLONG subFileSize;
 static DWORD GetCustomStreamSize(PVOID this, PULONGLONG FileSize){
+    //LogMessage("size required");
     *FileSize = subFileSize;
     return TRUE;
 }
@@ -250,7 +252,7 @@ int main(int argc, char **argv, char **envp)
 
     ScanParams.Descriptor        = &ScanDescriptor;
     ScanParams.ScanReply         = &ScanReply;
-    ScanReply.EngineScanCallback = EngineScanCustomCallback;
+    ScanReply.EngineScanCallback = EngineScanCallback;
     ScanReply.field_C            = 0x7fffffff;
     ScanDescriptor.Read          = ReadStream;
     ScanDescriptor.GetSize       = GetCustomStreamSize;
@@ -266,6 +268,7 @@ int main(int argc, char **argv, char **envp)
 
     for (char *filename = *++argv; *argv; ++argv) {
         ScanDescriptor.UserPtr = fopen(*argv, "r");
+        
 
         if (ScanDescriptor.UserPtr == NULL) {
             LogMessage("failed to open file %s", *argv);
@@ -274,8 +277,14 @@ int main(int argc, char **argv, char **envp)
 
         LogMessage("Scanning %s...", *argv);
         GetStreamSize(ScanDescriptor.UserPtr, &subFileSize);
+        LogMessage("size : %llu bytes",subFileSize);
+        char* fileCached = malloc(subFileSize);
+        if (fread(fileCached, 1, sizeof(fileCached), ScanDescriptor.UserPtr) != subFileSize){
+            //
+        }
         // first run for the whole file and see if all is good
         isResponsePositive = FALSE;
+        remainingSize = subFileSize;
         if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
             LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
             return 1;
@@ -286,19 +295,21 @@ int main(int argc, char **argv, char **envp)
             continue;
         }
 
-        ULONGLONG fileSize = subFileSize;
-        ULONGLONG leftOffset = 0ULL, rightOffset = subFileSize - 1ULL;
+        DWORD fileSize = subFileSize;
+        ULONGLONG rightOffset = subFileSize - 1ULL;
         while (isResponsePositive){
             isResponsePositive = FALSE;
             // binary search the right part
             // we need the minimum right part such that the response is positive
             ULONGLONG lowerRightOffset = leftOffset;
             ULONGLONG upperRightOffset = rightOffset;
+            LogMessage("Binary search right part");
+            fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
             while (lowerRightOffset < upperRightOffset){
-                fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
-                ULONGLONG middleRightOffset = (lowerRightOffset + upperRightOffset) >> 1ULL;
-                subFileSize = middleRightOffset - leftOffset + 1ULL;
+                ULONGLONG middleRightOffset = lowerRightOffset + ((upperRightOffset - lowerRightOffset) >> 1ULL);
+                subFileSize = middleRightOffset - leftOffset + 1;
                 isResponsePositive = FALSE;
+                remainingSize = subFileSize;
                 if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
                     LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
                     return 1;
@@ -316,11 +327,13 @@ int main(int argc, char **argv, char **envp)
             //we need the maximum left part such that the response is positive
             ULONGLONG lowerLeftOffset = leftOffset;
             ULONGLONG upperLeftOffset = rightOffset;
+            LogMessage("Binary search left part");
             while (lowerLeftOffset < upperLeftOffset){
-                ULONGLONG middleLeftOffset = (lowerLeftOffset + upperLeftOffset) >> 1ULL;
-                subFileSize = rightOffset - middleLeftOffset + 1ULL;
+                ULONGLONG middleLeftOffset = lowerLeftOffset + ((upperLeftOffset - lowerLeftOffset + 1) >> 1ULL);
+                subFileSize = rightOffset - middleLeftOffset + 1;
                 fseek(ScanDescriptor.UserPtr, middleLeftOffset, SEEK_SET);
                 isResponsePositive = FALSE;
+                remainingSize = subFileSize;
                 if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
                     LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
                     return 1;
@@ -333,8 +346,8 @@ int main(int argc, char **argv, char **envp)
                 }
             }
             leftOffset = upperLeftOffset;
-            LogMessage("Signature found. Signature starts at offset %llu and ends at offset %llu\n", leftOffset, rightOffset);
-
+            LogMessage("Signature found. Signature starts at offset %llu and ends at offset %llu\nThe signature is :\n", leftOffset, rightOffset);
+            print_sbstr(fileCached, leftOffset, rightOffset);
             //reset data for next iteration
             leftOffset = rightOffset + 1;
             rightOffset = fileSize - 1;
@@ -345,12 +358,13 @@ int main(int argc, char **argv, char **envp)
 
             fseek(ScanDescriptor.UserPtr, rightOffset, SEEK_SET);
             isResponsePositive = FALSE;
+            remainingSize = subFileSize;
             if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
                 LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
                 return 1;
             }
         }
-
+        free(fileCached);
         fclose(ScanDescriptor.UserPtr);
     }
 
