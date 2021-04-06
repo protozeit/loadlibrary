@@ -66,12 +66,6 @@ const struct rlimit kUsageLimits[] = {
 
 DWORD (* __rsignal)(PHANDLE KernelHandle, DWORD Code, PVOID Params, DWORD Size);
 
-void print_sbstr(char* str, ULONGLONG start, ULONGLONG end){
-    for (ULONGLONG i = start; i <= end; i++){ 
-        printf("%02X ",str[i]);
-    }
-    putchar('\n');
-}
 static DWORD EngineScanCallback(PSCANSTRUCT Scan)
 {
     if (Scan->Flags & SCAN_MEMBERNAME) {
@@ -279,9 +273,6 @@ int main(int argc, char **argv, char **envp)
         GetStreamSize(ScanDescriptor.UserPtr, &subFileSize);
         LogMessage("size : %llu bytes",subFileSize);
         char* fileCached = malloc(subFileSize);
-        if (fread(fileCached, 1, sizeof(fileCached), ScanDescriptor.UserPtr) != subFileSize){
-            //
-        }
         // first run for the whole file and see if all is good
         isResponsePositive = FALSE;
         remainingSize = subFileSize;
@@ -347,7 +338,12 @@ int main(int argc, char **argv, char **envp)
             }
             leftOffset = upperLeftOffset;
             LogMessage("Signature found. Signature starts at offset %llu and ends at offset %llu\nThe signature is :\n", leftOffset, rightOffset);
-            print_sbstr(fileCached, leftOffset, rightOffset);
+            subFileSize = rightOffset - leftOffset + 1;
+            char* signature = malloc(subFileSize + 1);
+            fseek(ScanDescriptor.UserPtr, rightOffset, SEEK_SET);
+            fread(signature, 1, subFileSize, ScanDescriptor.UserPtr);
+            printf("%s\n", signature);
+            free(signature);
             //reset data for next iteration
             leftOffset = rightOffset + 1;
             rightOffset = fileSize - 1;
@@ -356,7 +352,7 @@ int main(int argc, char **argv, char **envp)
                 break;
             }
 
-            fseek(ScanDescriptor.UserPtr, rightOffset, SEEK_SET);
+            fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
             isResponsePositive = FALSE;
             remainingSize = subFileSize;
             if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
@@ -364,7 +360,6 @@ int main(int argc, char **argv, char **envp)
                 return 1;
             }
         }
-        free(fileCached);
         fclose(ScanDescriptor.UserPtr);
     }
 
