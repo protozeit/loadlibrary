@@ -81,7 +81,6 @@ static DWORD EngineScanCallback(PSCANSTRUCT Scan)
         LogMessage("File may be corrupt.");
     }
     if (Scan->Flags & SCAN_FILETYPE) {
-        isResponsePositive = TRUE;
         LogMessage("File %s is identified as %s", Scan->FileName, Scan->VirusName);
     }
     if (Scan->Flags & 0x08000022) {
@@ -90,6 +89,7 @@ static DWORD EngineScanCallback(PSCANSTRUCT Scan)
     }
     // This may indicate PUA.
     if ((Scan->Flags & 0x40010000) == 0x40010000) {
+        isResponsePositive = TRUE;
         LogMessage("Threat %s identified.", Scan->VirusName);
     }
     return 0;
@@ -342,7 +342,7 @@ int main(int argc, char **argv, char **envp)
             signature[subFileSize] = '\0';
             LogMessage("The signature is :\n");
             LogMessage("--------------------------------------------------------------------------");
-            printf("%s\n\n", signature);
+            printf("%s\n", signature);
             LogMessage("--------------------------------------------------------------------------");
             //reset data for next iteration
             leftOffset = rightOffset + 1;
