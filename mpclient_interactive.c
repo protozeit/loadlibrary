@@ -247,29 +247,25 @@ int main(int argc, char **argv, char **envp)
 	char *input = NULL;
 	size_t len = 0;
 	printf("file> ");
-	getline(&input, &len, stdin);
+	int read = getline(&input, &len, stdin);
 
-	if (input == NULL) { /* ctrl-d */
-	    printf("\n");
-	    break;
-	}
+	input[read - 1] = '\0';
 
         ScanDescriptor.UserPtr = fopen(input, "r");
 
         if (ScanDescriptor.UserPtr == NULL) {
             LogMessage("failed to open file %s", input);
-            return 1;
+	    continue;
         }
 
         LogMessage("Scanning %s...", input);
 
         if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
             LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
-            return 1;
+	    continue;
         }
 
         fclose(ScanDescriptor.UserPtr);
-
 	free(input);
     }
 

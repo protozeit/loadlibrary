@@ -5,7 +5,7 @@ LDLIBS  = intercept/libdisasm.a -Wl,--whole-archive,peloader/libpeloader.a,--no-
 
 .PHONY: clean peloader intercept
 
-TARGETS = mpclient_optimized mpclient | peloader
+TARGETS = mpclient_interactive mpclient_optimized mpclient | peloader
 
 all: $(TARGETS)
 	-mkdir -p faketemp
@@ -28,7 +28,7 @@ mpclient_optimized: mpclient_optimized.o intercept/hook.o | peloader
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS) $(LDFLAGS)
 
 clean:
-	rm -f a.out core *.o core.* vgcore.* gmon.out mpclient mpclient_optimized
+	rm -f a.out core *.o core.* vgcore.* gmon.out mpclient mpclient_optimized mpclient_interactive
 	make -C intercept clean
 	make -C peloader clean
 	rm -rf faketemp
