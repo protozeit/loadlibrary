@@ -55,7 +55,7 @@ DWORD isResponsePositive;
 ULONGLONG leftOffset;
 ULONGLONG subFileSize;
 DWORD remainingSize;
-
+CHAR lastVirusName[50];
 // Any usage limits to prevent bugs disrupting system.
 const struct rlimit kUsageLimits[] = {
     [RLIMIT_FSIZE]  = { .rlim_cur = 0x20000000, .rlim_max = 0x20000000 },
@@ -66,35 +66,13 @@ const struct rlimit kUsageLimits[] = {
 
 DWORD (* __rsignal)(PHANDLE KernelHandle, DWORD Code, PVOID Params, DWORD Size);
 
-static DWORD EngineScanCallback(PSCANSTRUCT Scan)
-{
-    if (Scan->Flags & SCAN_MEMBERNAME) {
-        LogMessage("Scanning archive member %s", Scan->VirusName);
-    }
-    if (Scan->Flags & SCAN_PACKERSTART) {
-        LogMessage("Packer %s identified.", Scan->VirusName);
-    }
-    if (Scan->Flags & SCAN_ENCRYPTED) {
-        LogMessage("File is encrypted.");
-    }
-    if (Scan->Flags & SCAN_CORRUPT) {
-        LogMessage("File may be corrupt.");
-    }
-    if (Scan->Flags & SCAN_FILETYPE) {
-        LogMessage("File %s is identified as %s", Scan->FileName, Scan->VirusName);
-    }
-    if (Scan->Flags & 0x08000022) {
+static DWORD EngineScanCallback(PSCANSTRUCT Scan){
+    if ((Scan->Flags & 0x08000022) || (Scan->Flags & 0x40010000) == 0x40010000) {
         isResponsePositive = TRUE;
-        LogMessage("Threat %s identified.", Scan->VirusName);
-    }
-    // This may indicate PUA.
-    if ((Scan->Flags & 0x40010000) == 0x40010000) {
-        isResponsePositive = TRUE;
-        LogMessage("Threat %s identified.", Scan->VirusName);
+        strcpy(lastVirusName, Scan->VirusName);
     }
     return 0;
 }
-
 static DWORD ReadStream(PVOID this, ULONGLONG Offset, PVOID Buffer, DWORD Size, PDWORD SizeRead)
 {
     fseek(this, leftOffset + Offset, SEEK_SET);
@@ -269,28 +247,32 @@ int main(int argc, char **argv, char **envp)
         LogMessage("Scanning %s...", *argv);
         GetStreamSize(ScanDescriptor.UserPtr, &subFileSize);
         LogMessage("size : %llu bytes",subFileSize);
-        // first run for the whole file and see if all is good
-        isResponsePositive = FALSE;
-        remainingSize = subFileSize;
-        if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
-            LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
-            return 1;
-        }
-        if(!isResponsePositive){
-            LogMessage("No Threat found in the file %s\n", *argv);
-            fclose(ScanDescriptor.UserPtr);
-            continue;
-        }
 
+        // cache the file size
         DWORD fileSize = subFileSize;
-        ULONGLONG rightOffset = subFileSize - 1ULL;
-        while (isResponsePositive){
+        while (true){
+            ULONGLONG rightOffset = fileSize - 1ULL;
+            subFileSize = rightOffset - leftOffset + 1;
+            if (subFileSize <= 0){
+                break;
+            }
+            fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
+            remainingSize = subFileSize;
+            isResponsePositive = FALSE;
+            if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
+                LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
+                return 1;
+            }
+            if (!isResponsePositive){
+                //no further threaats
+                break;
+            }
             // binary search the right part
             // we need the minimum right part such that the response is positive
             ULONGLONG lowerRightOffset = leftOffset;
             ULONGLONG upperRightOffset = rightOffset;
-            fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
             while (lowerRightOffset < upperRightOffset){
+                fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
                 ULONGLONG middleRightOffset = lowerRightOffset + ((upperRightOffset - lowerRightOffset) >> 1ULL);
                 subFileSize = middleRightOffset - leftOffset + 1;
                 isResponsePositive = FALSE;
@@ -330,35 +312,24 @@ int main(int argc, char **argv, char **envp)
                 }
             }
             leftOffset = upperLeftOffset;
-            LogMessage("Signature found. Signature starts at offset %llu and ends at offset %llu", leftOffset, rightOffset);
             subFileSize = rightOffset - leftOffset + 1;
-            LogMessage("Size of signature is : %llu bytes", subFileSize);
             if (signature == NULL || strlen(signature) <= subFileSize) {
-                free(signature);
+                if (signature != NULL) free(signature);
                 signature = malloc((size_t) (1.5 * subFileSize)); //exponential growth to reduce heap allocation
             }
             fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
             if (fread(signature, 1, subFileSize, ScanDescriptor.UserPtr));
             signature[subFileSize] = '\0';
-            LogMessage("The signature is :\n");
+
+            LogMessage("Threat %s identified.", lastVirusName);
+            LogMessage("Signature found. Signature starts at offset %llu and ends at offset %llu", leftOffset, rightOffset);
+            LogMessage("Size of signature is : %llu bytes", subFileSize);
+            LogMessage("The signature is :");
             LogMessage("--------------------------------------------------------------------------");
             printf("%s\n", signature);
-            LogMessage("--------------------------------------------------------------------------");
+            LogMessage("--------------------------------------------------------------------------\n");
             //reset data for next iteration
             leftOffset = rightOffset + 1;
-            rightOffset = fileSize - 1;
-            subFileSize = rightOffset - leftOffset + 1;
-            if (subFileSize <= 0){
-                break;
-            }
-
-            fseek(ScanDescriptor.UserPtr, leftOffset, SEEK_SET);
-            isResponsePositive = FALSE;
-            remainingSize = subFileSize;
-            if (__rsignal(&KernelHandle, RSIG_SCAN_STREAMBUFFER, &ScanParams, sizeof ScanParams) != 0) {
-                LogMessage("__rsignal(RSIG_SCAN_STREAMBUFFER) returned failure, file unreadable?");
-                return 1;
-            }
         }
         if (signature) free(signature);
         fclose(ScanDescriptor.UserPtr);
